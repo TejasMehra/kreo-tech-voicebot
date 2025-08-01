@@ -1,0 +1,34 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.env/
+.venv/
+env/
+venv/
+*.env
+
+# Audio / temp files
+*.wav
+*.mp3
+*.tmp
+*.temp
+*.log
+
+# Jupyter Notebook Checkpoints
+.ipynb_checkpoints
+
+# VSCode
+.vscode/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Streamlit secrets & cache
+.streamlit/secrets.toml
+.streamlit/config.toml
+.streamlit/cache/

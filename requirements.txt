@@ -1,0 +1,7 @@
+streamlit
+google-generativeai
+whisper
+gtts
+pydub
+sounddevice
+torch
