@@ -194,5 +194,3 @@ if audio_bytes:
         handle_message(transcribed_text)
     else:
         st.warning("Could not understand the audio. Please try again.")
-
-�
