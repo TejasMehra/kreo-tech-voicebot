@@ -1,7 +1,7 @@
 streamlit
-google-generativeai
-whisper
-gtts
-pydub
-sounddevice
+streamlit-audiorecorder
+openai-whisper
 torch
+edge-tts
+numpy
+google-generativeai
