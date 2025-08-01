@@ -1,7 +1,7 @@
 streamlit
-streamlit-webrtc
-openai-whisper
-torch
-edge-tts
-numpy
 google-generativeai
+openai-whisper
+edge-tts
+audio-recorder-streamlit
+numpy
+av
