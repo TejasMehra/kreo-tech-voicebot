@@ -1,5 +1,5 @@
 streamlit
-streamlit-audiorecorder
+streamlit-webrtc
 openai-whisper
 torch
 edge-tts
