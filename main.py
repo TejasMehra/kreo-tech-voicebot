@@ -1,7 +1,5 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode
-import av
-import numpy as np
+from audio_recorder_streamlit import audio_recorder
 import tempfile
 import wave
 import os
@@ -17,7 +15,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 # -------------------- App Configuration --------------------
-st.set_page_config(page_title="Kreo Assistant", layout="wide", page_icon="🎮")
+st.set_page_config(page_title="Kreo Assistant", layout="wide", page_icon="�")
 st.title("🎮 Kreo Tech Voice Assistant")
 
 # -------------------- API & Model Initialization --------------------
@@ -111,45 +109,12 @@ async def text_to_speech(text):
     os.remove(tmp_path)
     logging.info("Speech generated and played.")
 
-def save_buffer_to_wav(audio_buffer):
-    """Saves the audio buffer from session state to a temporary WAV file."""
-    if not audio_buffer:
-        return None
-    
-    logging.info("Saving audio buffer to WAV file.")
-    # Concatenate all audio frames
-    raw_audio_data = np.concatenate([frame.to_ndarray() for frame in audio_buffer], axis=1)
-    
-    # Create a temporary file
-    path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
-
-    # Configure and write the WAV file
-    with wave.open(path, "wb") as wf:
-        wf.setnchannels(1)  # Mono audio
-        wf.setsampwidth(2)  # 16-bit audio
-        wf.setframerate(48000) # Sample rate from WebRTC
-        # Convert float audio to 16-bit PCM format
-        wf.writeframes((raw_audio_data.flatten() * 32767).astype(np.int16).tobytes())
-        
-    logging.info(f"WAV file saved at: {path}")
-    return path
-
 # -------------------- Session State Initialization --------------------
 
 if "chat" not in st.session_state:
     # Start a new chat session with the Gemini model
     st.session_state.chat = gemini_model.start_chat(history=[])
     st.session_state.history = []
-    st.session_state.audio_buffer = []
-
-# -------------------- Audio Processor Class --------------------
-
-class AudioProcessor(AudioProcessorBase):
-    def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
-        """Receives audio frames from WebRTC and appends them to the session buffer."""
-        # We store the frames in the session state to persist them across reruns
-        st.session_state.audio_buffer.append(frame)
-        return frame
 
 # -------------------- Main Application UI --------------------
 
@@ -199,55 +164,35 @@ user_text = st.chat_input("Ask me about Kreo Tech...")
 if user_text:
     handle_message(user_text)
 
-# Voice Input
-webrtc_ctx = webrtc_streamer(
-    key="voice-input",
-    mode=WebRtcMode.SENDONLY,
-    audio_processor_factory=AudioProcessor,
-    media_stream_constraints={"audio": True, "video": False},
-    send_audio_frame_by_frame=False, # Send frames in chunks
-    audio_receiver_size=1024
+# Voice Input using audio_recorder_streamlit
+st.markdown("### Or record your voice:")
+audio_bytes = audio_recorder(
+    text="Click to Record",
+    recording_color="#e84040",
+    neutral_color="#6a6a6a",
+    icon_size="2x",
+    pause_threshold=120.0, # Increase pause threshold to avoid premature stopping
 )
 
-# Logic to handle the state of the voice recorder
-if webrtc_ctx.state.playing:
-    # This block runs when the user has clicked "start" and is recording.
-    # We clear the buffer at the start of a new recording session.
-    if "is_recording" not in st.session_state or not st.session_state.is_recording:
-        st.session_state.audio_buffer = []
-        st.session_state.is_recording = True
-    st.info("🎙️ Recording... Press the 'stop' button in the component above when you're done.")
-else:
-    # This block runs when the recorder is stopped.
-    st.session_state.is_recording = False
-    # Check if there is audio in the buffer to be processed.
-    if st.session_state.get("audio_buffer"):
-        st.info("Recording stopped. Ready to process.")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✅ Submit Voice", use_container_width=True, type="primary"):
-                # Save the buffer to a WAV file
-                wav_path = save_buffer_to_wav(st.session_state.audio_buffer)
-                if wav_path:
-                    # Transcribe the audio
-                    transcribed_text = transcribe_audio(wav_path)
-                    if transcribed_text:
-                        st.caption(f"🎙️ You said: \"{transcribed_text}\"")
-                        # Process the transcribed text like a regular message
-                        handle_message(transcribed_text)
-                    else:
-                        st.warning("Could not understand audio. Please try again.")
-                    # Clean up the temp file
-                    os.remove(wav_path)
-                
-                # Clear the buffer and rerun to reset the UI
-                st.session_state.audio_buffer = []
-                st.rerun()
+if audio_bytes:
+    st.info("Audio recorded! Processing...")
+    # Save the audio bytes to a temporary WAV file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
+        # The audio_recorder returns a WAV file in bytes
+        tmp_wav.write(audio_bytes)
+        wav_path = tmp_wav.name
 
-        with col2:
-            if st.button("🗑️ Discard", use_container_width=True):
-                # Clear the buffer and rerun to reset the UI
-                st.session_state.audio_buffer = []
-                st.rerun()
+    # Transcribe the audio
+    transcribed_text = transcribe_audio(wav_path)
 
+    # Clean up the temp file
+    os.remove(wav_path)
+
+    if transcribed_text:
+        st.caption(f"🎙️ You said: \"{transcribed_text}\"")
+        # Process the transcribed text
+        handle_message(transcribed_text)
+    else:
+        st.warning("Could not understand the audio. Please try again.")
+
+�
