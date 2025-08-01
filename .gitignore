@@ -1,34 +1,23 @@
-# Byte-compiled / cache
+# Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
 *.pyd
-
-# Virtual environments
-.env/
-.venv/
-env/
-venv/
 *.env
+.env
+.venv/
+venv/
+*.db
 
-# Audio / temp files
+# Streamlit
+.streamlit/secrets.toml
+
+# Audio/temp
 *.wav
 *.mp3
 *.tmp
-*.temp
 *.log
 
-# Jupyter Notebook Checkpoints
-.ipynb_checkpoints
-
-# VSCode
-.vscode/
-
-# System files
+# OS junk
 .DS_Store
 Thumbs.db
-
-# Streamlit secrets & cache
-.streamlit/secrets.toml
-.streamlit/config.toml
-.streamlit/cache/
