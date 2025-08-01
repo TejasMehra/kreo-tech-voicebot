@@ -1,5 +1,5 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, AudioProcessorBase
+from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode
 import av
 import numpy as np
 import tempfile
@@ -11,136 +11,243 @@ import google.generativeai as genai
 import asyncio
 import edge_tts
 import base64
+import logging
 
-# -------------------- Config --------------------
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+
+# -------------------- App Configuration --------------------
 st.set_page_config(page_title="Kreo Assistant", layout="wide", page_icon="🎮")
 st.title("🎮 Kreo Tech Voice Assistant")
 
+# -------------------- API & Model Initialization --------------------
+
 # Get API key from Streamlit secrets
-api_key = st.secrets["GEMINI_API_KEY"]
+try:
+    api_key = st.secrets["GEMINI_API_KEY"]
+    genai.configure(api_key=api_key)
+except (KeyError, FileNotFoundError):
+    st.error("GEMINI_API_KEY not found in Streamlit secrets. Please add it.")
+    st.stop()
 
-# Initialize Gemini
-genai.configure(api_key=api_key)
-model = genai.GenerativeModel("models/gemini-1.5-flash")
 
-# System prompt
+# System prompt defining the assistant's personality and role
 SYSTEM_PROMPT = """
-You are Kreo, an energetic and helpful voice assistant for Kreo Tech.
-Only answer questions related to Kreo Tech's products, gaming PCs, or services.
-Keep replies short (max 50 words). Use a friendly, quirky tone.
-Always be helpful and energetic, with a touch of gaming culture.
+You are Kreo, an energetic and helpful voice assistant for Kreo Tech, a company that sells high-end custom gaming PCs.
+Your primary goal is to answer questions about Kreo Tech's products and services.
+You must only answer questions related to Kreo Tech, gaming PCs, PC components, and gaming culture.
+If a user asks a question outside of this scope, politely decline to answer and steer the conversation back to Kreo Tech.
+Keep your replies concise and friendly, ideally under 50 words.
+Adopt a quirky, energetic tone that would appeal to gamers. Use gaming slang where appropriate, but don't overdo it.
+Always be helpful and positive. Let's get this bread!
 """
 
-# Clean input
+# Use caching to load models only once
+@st.cache_resource
+def load_models():
+    """Loads the Gemini and Whisper models."""
+    logging.info("Loading Gemini and Whisper models...")
+    # Add the system prompt directly to the Gemini model configuration
+    gemini_model = genai.GenerativeModel(
+        "models/gemini-1.5-flash",
+        system_instruction=SYSTEM_PROMPT
+    )
+    whisper_model = whisper.load_model("base")
+    logging.info("Models loaded successfully.")
+    return gemini_model, whisper_model
+
+gemini_model, whisper_model = load_models()
+
+# -------------------- Utility Functions --------------------
+
 def clean_input(text):
-    replacements = ["creo", "krio", "curetech", "curotech", "kurio", "kreotech"]
+    """Cleans the transcribed text to correct common misspellings of 'Kreo'."""
+    # A list of common mispronunciations or transcription errors
+    replacements = ["creo", "krio", "curetech", "curotech", "kurio", "kreotech", "crayo"]
     for word in replacements:
-        text = re.sub(word, "Kreo", text, flags=re.IGNORECASE)
+        # Use case-insensitive regex substitution
+        text = re.sub(r'\b' + word + r'\b', "Kreo", text, flags=re.IGNORECASE)
     return text.strip()
 
-# Transcribe from WAV using Whisper
 def transcribe_audio(file_path):
-    model = whisper.load_model("base")
-    result = model.transcribe(file_path)
-    return result["text"]
+    """Transcribes an audio file using the pre-loaded Whisper model."""
+    logging.info(f"Transcribing audio file: {file_path}")
+    try:
+        result = whisper_model.transcribe(file_path)
+        transcription = result["text"]
+        logging.info(f"Transcription result: {transcription}")
+        return transcription
+    except Exception as e:
+        logging.error(f"Error during transcription: {e}")
+        return ""
 
-# Text-to-speech
-async def speak(text):
-    voice = "en-US-ChristopherNeural"
-    tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
+async def text_to_speech(text):
+    """Converts text to speech using Edge TTS and plays it automatically."""
+    logging.info("Generating speech for text...")
+    voice = "en-US-ChristopherNeural"  # A friendly, energetic male voice
+    # Create a temporary file to save the audio
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+        tmp_path = tmp_file.name
+
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(tmp_path)
+
+    # Read the audio file and encode it in base64
     with open(tmp_path, "rb") as f:
         audio_bytes = f.read()
-        b64 = base64.b64encode(audio_bytes).decode()
-        st.markdown(f"""
+    
+    b64_audio = base64.b64encode(audio_bytes).decode()
+    
+    # Embed the audio using HTML with autoplay
+    audio_html = f"""
         <audio autoplay style="display:none">
-            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+            <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
+            Your browser does not support the audio element.
         </audio>
-        """, unsafe_allow_html=True)
+    """
+    st.markdown(audio_html, unsafe_allow_html=True)
+    
+    # Clean up the temporary file
+    os.remove(tmp_path)
+    logging.info("Speech generated and played.")
 
-# -------------------- Audio Processor --------------------
+def save_buffer_to_wav(audio_buffer):
+    """Saves the audio buffer from session state to a temporary WAV file."""
+    if not audio_buffer:
+        return None
+    
+    logging.info("Saving audio buffer to WAV file.")
+    # Concatenate all audio frames
+    raw_audio_data = np.concatenate([frame.to_ndarray() for frame in audio_buffer], axis=1)
+    
+    # Create a temporary file
+    path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
+
+    # Configure and write the WAV file
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(1)  # Mono audio
+        wf.setsampwidth(2)  # 16-bit audio
+        wf.setframerate(48000) # Sample rate from WebRTC
+        # Convert float audio to 16-bit PCM format
+        wf.writeframes((raw_audio_data.flatten() * 32767).astype(np.int16).tobytes())
+        
+    logging.info(f"WAV file saved at: {path}")
+    return path
+
+# -------------------- Session State Initialization --------------------
+
+if "chat" not in st.session_state:
+    # Start a new chat session with the Gemini model
+    st.session_state.chat = gemini_model.start_chat(history=[])
+    st.session_state.history = []
+    st.session_state.audio_buffer = []
+
+# -------------------- Audio Processor Class --------------------
+
 class AudioProcessor(AudioProcessorBase):
-    def __init__(self):
-        self.frames = []
-
     def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
-        audio = frame.to_ndarray()
-        self.frames.append(audio)
+        """Receives audio frames from WebRTC and appends them to the session buffer."""
+        # We store the frames in the session state to persist them across reruns
+        st.session_state.audio_buffer.append(frame)
         return frame
 
-    def get_wav_file(self):
-        if not self.frames:
-            return None
-        audio = np.concatenate(self.frames, axis=1).flatten()
-        path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
-        with wave.open(path, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(48000)
-            wf.writeframes((audio * 32767).astype(np.int16).tobytes())
-        return path
+# -------------------- Main Application UI --------------------
 
-# -------------------- Chat Session --------------------
-if "chat" not in st.session_state:
-    st.session_state.chat = model.start_chat(history=[])
-    st.session_state.history = []
-
-# Display past chat
+# Display the chat history
 for role, msg in st.session_state.history:
-    st.chat_message(role).write(msg)
+    with st.chat_message(role):
+        st.write(msg)
 
-# -------------------- Input UI --------------------
+# Function to handle a new message (from text or voice)
+def handle_message(user_input):
+    cleaned_input = clean_input(user_input)
+    
+    # Add user message to history and display it
+    st.session_state.history.append(("user", cleaned_input))
+    with st.chat_message("user"):
+        st.write(cleaned_input)
+
+    # Send message to Gemini and get the response
+    try:
+        response = st.session_state.chat.send_message(cleaned_input).text
+    except Exception as e:
+        response = f"Sorry, I ran into an error: {e}"
+        logging.error(f"Gemini API error: {e}")
+
+    # Add assistant response to history and display it
+    st.session_state.history.append(("assistant", response))
+    with st.chat_message("assistant"):
+        st.write(response)
+
+    # Run the text-to-speech function
+    # asyncio.run() can cause issues if an event loop is already running.
+    # This is a safer way to run an async function from a sync context.
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(text_to_speech(response))
+        loop.close()
+    except Exception as e:
+        logging.error(f"Error running TTS: {e}")
+
+
 st.divider()
 st.subheader("Talk or Type to Kreo")
 
 # Text Input
-col1, col2 = st.columns([5, 1])
-with col1:
-    user_text = st.text_input("Your question", placeholder="Ask me about Kreo Tech...", label_visibility="collapsed")
-with col2:
-    send_pressed = st.button("➡️", use_container_width=True)
+user_text = st.chat_input("Ask me about Kreo Tech...")
+if user_text:
+    handle_message(user_text)
 
 # Voice Input
-st.markdown("### Or record your voice:")
 webrtc_ctx = webrtc_streamer(
-    key="voice",
-    mode="SENDONLY",
-    audio_receiver_size=1024,
-    in_audio_enabled=True,
+    key="voice-input",
+    mode=WebRtcMode.SENDONLY,
     audio_processor_factory=AudioProcessor,
     media_stream_constraints={"audio": True, "video": False},
+    send_audio_frame_by_frame=False, # Send frames in chunks
+    audio_receiver_size=1024
 )
 
-# Process text input
-if send_pressed and user_text:
-    cleaned_input = clean_input(user_text)
-    st.session_state.history.append(("user", cleaned_input))
+# Logic to handle the state of the voice recorder
+if webrtc_ctx.state.playing:
+    # This block runs when the user has clicked "start" and is recording.
+    # We clear the buffer at the start of a new recording session.
+    if "is_recording" not in st.session_state or not st.session_state.is_recording:
+        st.session_state.audio_buffer = []
+        st.session_state.is_recording = True
+    st.info("🎙️ Recording... Press the 'stop' button in the component above when you're done.")
+else:
+    # This block runs when the recorder is stopped.
+    st.session_state.is_recording = False
+    # Check if there is audio in the buffer to be processed.
+    if st.session_state.get("audio_buffer"):
+        st.info("Recording stopped. Ready to process.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Submit Voice", use_container_width=True, type="primary"):
+                # Save the buffer to a WAV file
+                wav_path = save_buffer_to_wav(st.session_state.audio_buffer)
+                if wav_path:
+                    # Transcribe the audio
+                    transcribed_text = transcribe_audio(wav_path)
+                    if transcribed_text:
+                        st.caption(f"🎙️ You said: \"{transcribed_text}\"")
+                        # Process the transcribed text like a regular message
+                        handle_message(transcribed_text)
+                    else:
+                        st.warning("Could not understand audio. Please try again.")
+                    # Clean up the temp file
+                    os.remove(wav_path)
+                
+                # Clear the buffer and rerun to reset the UI
+                st.session_state.audio_buffer = []
+                st.rerun()
 
-    prompt = f"{SYSTEM_PROMPT}\n\nUser: {cleaned_input}"
-    response = model.generate_content(prompt).text
-    st.session_state.history.append(("assistant", response))
+        with col2:
+            if st.button("🗑️ Discard", use_container_width=True):
+                # Clear the buffer and rerun to reset the UI
+                st.session_state.audio_buffer = []
+                st.rerun()
 
-    st.chat_message("user").write(cleaned_input)
-    st.chat_message("assistant").write(response)
-
-    asyncio.run(speak(response))
-
-# Process voice input
-if webrtc_ctx.state.playing and webrtc_ctx.audio_processor:
-    if st.button("🔴 Stop Recording & Submit"):
-        wav_path = webrtc_ctx.audio_processor.get_wav_file()
-        if wav_path:
-            transcribed = transcribe_audio(wav_path)
-            cleaned = clean_input(transcribed)
-            st.caption(f"🎙️ You said: {cleaned}")
-
-            st.session_state.history.append(("user", cleaned))
-            prompt = f"{SYSTEM_PROMPT}\n\nUser: {cleaned}"
-            response = model.generate_content(prompt).text
-            st.session_state.history.append(("assistant", response))
-
-            st.chat_message("user").write(cleaned)
-            st.chat_message("assistant").write(response)
-
-            asyncio.run(speak(response))
